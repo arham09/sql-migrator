@@ -2,6 +2,7 @@ package migrator
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -41,6 +42,7 @@ func Init(db *sql.DB) (*Migrator, error) {
 
 	// Find out past migrations
 	rows, err := db.Query("SELECT version FROM `schema_migrations`;")
+
 	if err != nil {
 		return migrator, err
 	}
@@ -76,7 +78,7 @@ func Create(name string) error {
 
 	var out bytes.Buffer
 
-	t := template.Must(template.ParseFiles("../../migrations/template.txt"))
+	t := template.Must(template.ParseFiles("./migrations/template.txt"))
 
 	err := t.Execute(&out, in)
 
@@ -84,7 +86,7 @@ func Create(name string) error {
 		return errors.New("Unable to execute template:" + err.Error())
 	}
 
-	f, err := os.Create(fmt.Sprintf("../../migrations/%s_%s.go", version, name))
+	f, err := os.Create(fmt.Sprintf("./migrations/%s_%s.go", version, name))
 
 	if err != nil {
 		return errors.New("Unable to create migration file:" + err.Error())
@@ -119,6 +121,96 @@ func (m *Migrator) AddMigration(mg *Migration) {
 	copy(m.Versions[index+1:], m.Versions[index:])
 
 	m.Versions[index] = mg.Version
+}
+
+func (m *Migrator) Up(step int) error {
+	tx, err := m.db.BeginTx(context.TODO(), &sql.TxOptions{})
+	if err != nil {
+		return err
+	}
+
+	count := 0
+	for _, v := range m.Versions {
+		if step > 0 && count == step {
+			break
+		}
+
+		mg := m.Migrations[v]
+
+		if mg.done {
+			continue
+		}
+
+		fmt.Println("Running migration", mg.Version)
+		if err := mg.Up(tx); err != nil {
+			tx.Rollback()
+			return err
+		}
+
+		if _, err := tx.Exec("INSERT INTO `schema_migrations` VALUES(?)", mg.Version); err != nil {
+			tx.Rollback()
+			return err
+		}
+		fmt.Println("Finished running migration", mg.Version)
+
+		count++
+	}
+
+	tx.Commit()
+
+	return nil
+}
+
+func (m *Migrator) Down(step int) error {
+	tx, err := m.db.BeginTx(context.TODO(), &sql.TxOptions{})
+	if err != nil {
+		return err
+	}
+
+	count := 0
+	for _, v := range reverse(m.Versions) {
+		if step > 0 && count == step {
+			break
+		}
+
+		mg := m.Migrations[v]
+
+		if !mg.done {
+			continue
+		}
+
+		fmt.Println("Reverting Migration", mg.Version)
+		if err := mg.Down(tx); err != nil {
+			tx.Rollback()
+			return err
+		}
+
+		if _, err := tx.Exec("DELETE FROM `schema_migrations` WHERE version = ?", mg.Version); err != nil {
+			tx.Rollback()
+			return err
+		}
+		fmt.Println("Finished reverting migration", mg.Version)
+
+		count++
+	}
+
+	tx.Commit()
+
+	return nil
+}
+
+func (m *Migrator) MigrationStatus() error {
+	for _, v := range m.Versions {
+		mg := m.Migrations[v]
+
+		if mg.done {
+			fmt.Println(fmt.Sprintf("Migration %s... completed", v))
+		} else {
+			fmt.Println(fmt.Sprintf("Migration %s... pending", v))
+		}
+	}
+
+	return nil
 }
 
 func reverse(arr []string) []string {
