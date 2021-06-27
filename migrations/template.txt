@@ -6,7 +6,7 @@ import (
 )
 
 func init() {
-	migrator.AddMigration(&Migration{
+	migrator.Agent.AddMigration(&migrator.Migration{
 		Version: "{{.Version}}",
 		Up:      mig_{{.Version}}_{{.Name}}_up,
 		Down:    mig_{{.Version}}_{{.Name}}_down,
